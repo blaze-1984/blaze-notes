@@ -231,14 +231,14 @@ export default function BlazeNotes() {
         {/* ALL NOTES */}
         <div>
           {(search || filter!=="All") && <div style={{ color: textSecondary, fontSize: 10, letterSpacing: "0.12em", marginBottom: 12 }}>{search ? `RESULTS FOR "${search.toUpperCase()}"` : filter.toUpperCase()}</div>}
-          {!search && filter==="All" && unpinned.length > 0 && <div style={{ color: textSecondary, fontSize: 10, letterSpacing: "0.12em", marginBottom: 12 }}>ALL NOTES</div>}
+          {!search && filter==="All" && unpinned.length > 3 && <div style={{ color: textSecondary, fontSize: 10, letterSpacing: "0.12em", marginBottom: 12 }}>ALL NOTES</div>}
           {filtered.length === 0 ? (
             <div style={{ textAlign: "center", color: textSecondary, fontSize: 13, padding: "60px 0", letterSpacing: "0.05em" }}>
               {search ? `NO RESULTS FOR "${search.toUpperCase()}"` : "NO NOTES YET — HIT + NEW NOTE ✦"}
             </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px,1fr))", gap: 12 }}>
-              {(search || filter!=="All" ? filtered : unpinned).map(n => (
+              {(search || filter!=="All" ? filtered : unpinned.slice(3)).map(n => (
                 <NoteCard key={n.id} note={n} onOpen={openEdit} onPin={togglePin} onCopy={handleCopy} onMove={setMovingNoteId} onDelete={setDeleteConfirm} copyFeedback={copyFeedback} tp={textPrimary} ts={textSecondary} card={card} cb={cardBorder} accent={accent} as={accentSoft} />
               ))}
             </div>
