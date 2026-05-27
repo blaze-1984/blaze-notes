@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 const STORAGE_KEY = "blazenotes_v2";
 const THEME_KEY = "blazenotes_theme";
@@ -248,52 +248,14 @@ export default function BlazeNotes() {
 
       {/* NOTE MODAL */}
       {modal === "note" && (
-        <div style={{ position:"fixed", inset:0, background:overlay, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:20, animation:"fadeIn 0.2s" }}
-          onClick={e => e.target===e.currentTarget && setModal(null)}>
-          <div style={{ background:modalBg, border:`1px solid ${cardBorder}`, borderRadius:18, padding:28, width:"100%", maxWidth:520, maxHeight:"88vh", overflowY:"auto", animation:"scaleIn 0.2s" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:22 }}>
-              <h2 style={{ fontFamily:"'Syne',sans-serif", fontSize:18, fontWeight:800, color:textPrimary }}>{activeNote ? "EDIT NOTE" : "NEW NOTE"}</h2>
-              <button className="ib" onClick={() => setModal(null)} style={{ color:textSecondary, fontSize:16, width:32, height:32 }}>✕</button>
-            </div>
-            <div style={{ marginBottom:14 }}>
-              <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:6 }}>Title *</label>
-              <input autoFocus style={{ width:"100%", background:inputBg, border:`1px solid ${inputBorder}`, borderRadius:10, color:textPrimary, fontSize:14, padding:"11px 14px", outline:"none" }}
-                placeholder="Note title..." value={editTitle} onChange={e => setEditTitle(e.target.value)}
-                onFocus={e => e.target.style.borderColor=accent} onBlur={e => e.target.style.borderColor=inputBorder} />
-            </div>
-            <div style={{ marginBottom:14 }}>
-              <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:6 }}>Folder</label>
-              <select style={{ width:"100%", background:inputBg, border:`1px solid ${inputBorder}`, borderRadius:10, color:textPrimary, fontSize:13, padding:"11px 14px", outline:"none", cursor:"pointer" }}
-                value={editFolder} onChange={e => setEditFolder(e.target.value)}>
-                {folders.map(f => <option key={f} value={f}>{f}</option>)}
-              </select>
-            </div>
-            <div style={{ marginBottom:14 }}>
-              <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:8 }}>Color Label</label>
-              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                {NOTE_COLORS.map(c => (
-                  <div key={c.id} onClick={() => setEditColor(c.value)}
-                    style={{ width:26, height:26, borderRadius:"50%", background:c.value||(dark?"#2a2a3a":"#e0e0f0"), border:`2px solid ${editColor===c.value ? accent:"transparent"}`, cursor:"pointer", transition:"border 0.15s", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    {editColor===c.value && <span style={{ color:"#fff", fontSize:10 }}>✓</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div style={{ marginBottom:22 }}>
-              <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:6 }}>Content</label>
-              <textarea style={{ width:"100%", background:inputBg, border:`1px solid ${inputBorder}`, borderRadius:10, color:textPrimary, fontSize:13, padding:"11px 14px", outline:"none", minHeight:160, lineHeight:1.7 }}
-                placeholder="Write anything..." value={editBody} onChange={e => setEditBody(e.target.value)}
-                onFocus={e => e.target.style.borderColor=accent} onBlur={e => e.target.style.borderColor=inputBorder} />
-            </div>
-            <div style={{ display:"flex", justifyContent:"space-between" }}>
-              {activeNote && <S onClick={() => setDeleteConfirm(activeNote.id)} style={{ background:"#f8717122", border:"1px solid #f8717144", borderRadius:10, color:"#f87171", fontSize:12, padding:"10px 16px" }}>DELETE</S>}
-              <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
-                <S onClick={() => setModal(null)} style={{ background:"transparent", border:`1px solid ${inputBorder}`, borderRadius:10, color:textSecondary, fontSize:12, padding:"10px 16px" }}>CANCEL</S>
-                <S onClick={saveNote} style={{ background:accent, borderRadius:10, color:"#fff", fontSize:12, fontWeight:500, padding:"10px 20px", opacity:editTitle.trim()?1:0.5 }}>{activeNote?"UPDATE":"SAVE NOTE"}</S>
-              </div>
-            </div>
-          </div>
-        </div>
+        <NoteModal
+          activeNote={activeNote} editTitle={editTitle} setEditTitle={setEditTitle}
+          editBody={editBody} setEditBody={setEditBody} editFolder={editFolder} setEditFolder={setEditFolder}
+          editColor={editColor} setEditColor={setEditColor} folders={folders}
+          onSave={saveNote} onClose={() => setModal(null)} onDelete={() => setDeleteConfirm(activeNote?.id)}
+          modalBg={modalBg} cardBorder={cardBorder} inputBg={inputBg} inputBorder={inputBorder}
+          textPrimary={textPrimary} textSecondary={textSecondary} accent={accent} dark={dark} S={S}
+        />
       )}
 
       {/* FOLDER MODAL */}
@@ -399,6 +361,137 @@ function NoteCard({ note, onOpen, onPin, onCopy, onMove, onDelete, copyFeedback,
           {note.folder}
         </span>
         <span style={{ color:ts, fontSize:10 }}>{timeAgo(note.updatedAt)}</span>
+      </div>
+    </div>
+  );
+}
+
+function NoteModal({ activeNote, editTitle, setEditTitle, editBody, setEditBody, editFolder, setEditFolder, editColor, setEditColor, folders, onSave, onClose, onDelete, modalBg, cardBorder, inputBg, inputBorder, textPrimary, textSecondary, accent, dark, S }) {
+  const [findText, setFindText] = useState("");
+  const [matchIdx, setMatchIdx] = useState(0);
+  const textareaRef = useRef(null);
+
+  const matches = findText.trim()
+    ? [...editBody.matchAll(new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'))]
+    : [];
+
+  useEffect(() => { setMatchIdx(0); }, [findText]);
+
+  const jumpToMatch = (idx) => {
+    if (!matches.length || !textareaRef.current) return;
+    const match = matches[idx % matches.length];
+    textareaRef.current.focus();
+    textareaRef.current.setSelectionRange(match.index, match.index + findText.length);
+    const lineHeight = 24;
+    const lines = editBody.substring(0, match.index).split('\n').length;
+    textareaRef.current.scrollTop = (lines - 3) * lineHeight;
+  };
+
+  const nextMatch = () => {
+    const next = (matchIdx + 1) % matches.length;
+    setMatchIdx(next);
+    jumpToMatch(next);
+  };
+  const prevMatch = () => {
+    const prev = (matchIdx - 1 + matches.length) % matches.length;
+    setMatchIdx(prev);
+    jumpToMatch(prev);
+  };
+
+  const NOTE_COLORS = [
+    { id: "none", value: null },
+    { id: "purple", value: "#7c6af7" },
+    { id: "cyan", value: "#22d3ee" },
+    { id: "green", value: "#4ade80" },
+    { id: "orange", value: "#fb923c" },
+    { id: "pink", value: "#f472b6" },
+    { id: "red", value: "#f87171" },
+    { id: "yellow", value: "#facc15" },
+  ];
+
+  const overlay = "rgba(0,0,0,0.65)";
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:overlay, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:20, animation:"fadeIn 0.2s" }}
+      onClick={e => e.target===e.currentTarget && onClose()}>
+      <div style={{ background:modalBg, border:`1px solid ${cardBorder}`, borderRadius:18, padding:32, width:"100%", maxWidth:780, maxHeight:"92vh", overflowY:"auto", animation:"scaleIn 0.2s", position:"relative" }}>
+
+        {/* Header */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24 }}>
+          <h2 style={{ fontFamily:"'Syne',sans-serif", fontSize:20, fontWeight:800, color:textPrimary }}>{activeNote ? "EDIT NOTE" : "NEW NOTE"}</h2>
+          <button className="ib" onClick={onClose} style={{ color:textSecondary, fontSize:16, width:32, height:32 }}>✕</button>
+        </div>
+
+        {/* Always visible search bar */}
+        <div style={{ background: dark?"#1a1a28":"#f0f0ff", border:`1px solid ${accent}33`, borderRadius:10, padding:"10px 14px", marginBottom:18, display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ color:textSecondary, fontSize:13 }}>⌕</span>
+          <input
+            style={{ flex:1, background:"transparent", border:"none", outline:"none", color:textPrimary, fontSize:13, fontFamily:"inherit" }}
+            placeholder="Search inside this note..."
+            value={findText}
+            onChange={e => setFindText(e.target.value)}
+            onKeyDown={e => { if(e.key==="Enter") nextMatch(); }}
+          />
+          <span style={{ color:textSecondary, fontSize:11, whiteSpace:"nowrap" }}>
+            {matches.length > 0 ? `${matchIdx+1}/${matches.length}` : findText ? "0 results" : ""}
+          </span>
+          {matches.length > 0 && <>
+            <button onClick={prevMatch} style={{ background:"none", border:`1px solid ${inputBorder}`, borderRadius:6, color:textSecondary, cursor:"pointer", padding:"3px 8px", fontSize:12 }}>↑</button>
+            <button onClick={nextMatch} style={{ background:"none", border:`1px solid ${inputBorder}`, borderRadius:6, color:textSecondary, cursor:"pointer", padding:"3px 8px", fontSize:12 }}>↓</button>
+          </>}
+          {findText && <button onClick={() => setFindText("")} style={{ background:"none", border:"none", color:textSecondary, cursor:"pointer", fontSize:14 }}>✕</button>}
+        </div>
+
+        {/* Two column layout */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+          <div>
+            <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:6 }}>Title *</label>
+            <input autoFocus style={{ width:"100%", background:inputBg, border:`1px solid ${inputBorder}`, borderRadius:10, color:textPrimary, fontSize:14, padding:"11px 14px", outline:"none" }}
+              placeholder="Note title..." value={editTitle} onChange={e => setEditTitle(e.target.value)}
+              onFocus={e => e.target.style.borderColor=accent} onBlur={e => e.target.style.borderColor=inputBorder} />
+          </div>
+          <div>
+            <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:6 }}>Folder</label>
+            <select style={{ width:"100%", background:inputBg, border:`1px solid ${inputBorder}`, borderRadius:10, color:textPrimary, fontSize:13, padding:"11px 14px", outline:"none", cursor:"pointer" }}
+              value={editFolder} onChange={e => setEditFolder(e.target.value)}>
+              {folders.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* Color */}
+        <div style={{ marginBottom:16 }}>
+          <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:8 }}>Color Label</label>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            {NOTE_COLORS.map(c => (
+              <div key={c.id} onClick={() => setEditColor(c.value)}
+                style={{ width:26, height:26, borderRadius:"50%", background:c.value||(dark?"#2a2a3a":"#e0e0f0"), border:`2px solid ${editColor===c.value ? accent:"transparent"}`, cursor:"pointer", transition:"border 0.15s", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {editColor===c.value && <span style={{ color:"#fff", fontSize:10 }}>✓</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Content */}
+        <div style={{ marginBottom:24 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+            <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase" }}>Content</label>
+            <span style={{ color:textSecondary, fontSize:10 }}>{editBody.length} chars · {editBody.trim() ? editBody.trim().split(/\s+/).length : 0} words</span>
+          </div>
+          <textarea ref={textareaRef}
+            style={{ width:"100%", background:inputBg, border:`1px solid ${inputBorder}`, borderRadius:10, color:textPrimary, fontSize:13, padding:"14px 16px", outline:"none", minHeight:280, lineHeight:1.8, resize:"vertical" }}
+            placeholder="Write anything... (Press Ctrl+F to search inside)" value={editBody} onChange={e => setEditBody(e.target.value)}
+            onFocus={e => e.target.style.borderColor=accent} onBlur={e => e.target.style.borderColor=inputBorder} />
+        </div>
+
+        {/* Actions */}
+        <div style={{ display:"flex", justifyContent:"space-between" }}>
+          {activeNote && <S onClick={onDelete} style={{ background:"#f8717122", border:"1px solid #f8717144", borderRadius:10, color:"#f87171", fontSize:12, padding:"10px 16px" }}>DELETE</S>}
+          <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
+            <S onClick={onClose} style={{ background:"transparent", border:`1px solid ${inputBorder}`, borderRadius:10, color:textSecondary, fontSize:12, padding:"10px 16px" }}>CANCEL</S>
+            <S onClick={onSave} style={{ background:accent, borderRadius:10, color:"#fff", fontSize:12, fontWeight:500, padding:"10px 20px", opacity:editTitle.trim()?1:0.5 }}>{activeNote?"UPDATE":"SAVE NOTE"}</S>
+          </div>
+        </div>
       </div>
     </div>
   );
