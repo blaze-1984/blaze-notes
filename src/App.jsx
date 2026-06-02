@@ -1,8 +1,14 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { auth, provider, db } from "./firebase";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import {
+  collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy
+} from "firebase/firestore";
 
 const STORAGE_KEY = "blazenotes_v2";
 const THEME_KEY = "blazenotes_theme";
 const FOLDERS_KEY = "blazenotes_folders_v2";
+const MIGRATED_KEY = "blazenotes_migrated";
 
 const NOTE_COLORS = [
   { id: "none", value: null },
@@ -28,11 +34,59 @@ function timeAgo(dateStr) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+// ─── LOGIN SCREEN ────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin, loading }) {
+  const dark = true;
+  return (
+    <div style={{ minHeight: "100vh", background: "#0d0d12", fontFamily: "'DM Mono', monospace", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800;900&display=swap');`}</style>
+      <div style={{ textAlign: "center", padding: 40 }}>
+        <h1 style={{ fontFamily: "'Syne', sans-serif", fontSize: 48, fontWeight: 900, color: "#eeeef8", letterSpacing: "-0.03em", marginBottom: 8 }}>
+          BLAZE<span style={{ color: "#7c6af7" }}>NOTES</span>
+        </h1>
+        <p style={{ color: "#6666aa", fontSize: 13, marginBottom: 40, letterSpacing: "0.06em" }}>YOUR NOTES. EVERYWHERE.</p>
+        <button
+          onClick={onLogin}
+          disabled={loading}
+          style={{ display: "inline-flex", alignItems: "center", gap: 12, background: "#ffffff", border: "none", borderRadius: 12, padding: "14px 28px", fontSize: 14, fontFamily: "'DM Mono', monospace", fontWeight: 500, cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1, transition: "opacity 0.2s, transform 0.15s" }}
+          onMouseOver={e => e.currentTarget.style.transform = "translateY(-2px)"}
+          onMouseOut={e => e.currentTarget.style.transform = "translateY(0)"}
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18z"/><path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2.01c-.72.48-1.63.76-2.7.76-2.08 0-3.84-1.4-4.47-3.29H1.87v2.07A8 8 0 0 0 8.98 17z"/><path fill="#FBBC05" d="M4.51 10.52A4.8 4.8 0 0 1 4.26 9c0-.53.09-1.04.25-1.52V5.41H1.87A8 8 0 0 0 .98 9c0 1.29.31 2.51.89 3.59l2.64-2.07z"/><path fill="#EA4335" d="M8.98 3.58c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 0 0 8.98 1a8 8 0 0 0-7.11 4.41l2.64 2.07c.63-1.89 2.39-3.3 4.47-3.3z"/></svg>
+          {loading ? "Signing in..." : "Sign in with Google"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── MIGRATION BANNER ────────────────────────────────────────────────────────
+function MigrationBanner({ onMigrate, onDismiss }) {
+  return (
+    <div style={{ background: "#7c6af722", border: "1px solid #7c6af755", borderRadius: 12, padding: "14px 20px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div>
+        <span style={{ color: "#eeeef8", fontSize: 13, fontWeight: 500 }}>📦 You have local notes</span>
+        <span style={{ color: "#6666aa", fontSize: 12, marginLeft: 10 }}>Import them to your cloud account?</span>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onMigrate} style={{ background: "#7c6af7", border: "none", borderRadius: 8, color: "#fff", fontSize: 12, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit" }}>Import Now</button>
+        <button onClick={onDismiss} style={{ background: "transparent", border: "1px solid #28283a", borderRadius: 8, color: "#6666aa", fontSize: 12, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit" }}>Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ────────────────────────────────────────────────────────────────
 export default function BlazeNotes() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [showMigration, setShowMigration] = useState(false);
+
   const [theme, setTheme] = useState(() => loadData(THEME_KEY, "dark"));
   const dark = theme === "dark";
-  const [notes, setNotesRaw] = useState(() => loadData(STORAGE_KEY, []));
-  const [folders, setFoldersRaw] = useState(() => loadData(FOLDERS_KEY, ["Ideas", "Processes", "Commands"]));
+  const [notes, setNotesRaw] = useState([]);
+  const [folders, setFoldersRaw] = useState(["Ideas", "Processes", "Commands"]);
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState(null);
@@ -48,30 +102,115 @@ export default function BlazeNotes() {
   const [copyFeedback, setCopyFeedback] = useState(null);
   const [movingNoteId, setMovingNoteId] = useState(null);
 
+  // ── Auth listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // ── Firestore listeners when logged in
+  useEffect(() => {
+    if (!user) return;
+
+    // Check if migration needed
+    const localNotes = loadData(STORAGE_KEY, []);
+    const alreadyMigrated = loadData(MIGRATED_KEY, false);
+    if (localNotes.length > 0 && !alreadyMigrated) setShowMigration(true);
+
+    // Listen to notes
+    const notesRef = collection(db, "users", user.uid, "notes");
+    const unsub1 = onSnapshot(query(notesRef), (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setNotesRaw(data);
+    });
+
+    // Listen to folders doc
+    const foldersRef = doc(db, "users", user.uid, "meta", "folders");
+    const unsub2 = onSnapshot(foldersRef, (snap) => {
+      if (snap.exists()) setFoldersRaw(snap.data().list || []);
+    });
+
+    return () => { unsub1(); unsub2(); };
+  }, [user]);
+
+  // ── Save folders to Firestore
+  const saveFoldersToFirestore = async (list) => {
+    if (!user) return;
+    const ref = doc(db, "users", user.uid, "meta", "folders");
+    await setDoc(ref, { list });
+  };
+
+  // ── Note helpers
+  const saveNoteToFirestore = async (note) => {
+    if (!user) return;
+    const ref = doc(db, "users", user.uid, "notes", note.id);
+    await setDoc(ref, note);
+  };
+  const deleteNoteFromFirestore = async (id) => {
+    if (!user) return;
+    await deleteDoc(doc(db, "users", user.uid, "notes", id));
+  };
+
   const setNotes = useCallback((val) => {
-    setNotesRaw(prev => { const next = typeof val === "function" ? val(prev) : val; saveData(STORAGE_KEY, next); return next; });
+    setNotesRaw(prev => typeof val === "function" ? val(prev) : val);
   }, []);
+
   const setFolders = useCallback((val) => {
-    setFoldersRaw(prev => { const next = typeof val === "function" ? val(prev) : val; saveData(FOLDERS_KEY, next); return next; });
-  }, []);
+    setFoldersRaw(prev => {
+      const next = typeof val === "function" ? val(prev) : val;
+      saveFoldersToFirestore(next);
+      return next;
+    });
+  }, [user]);
+
+  // ── Migration
+  const handleMigrate = async () => {
+    const localNotes = loadData(STORAGE_KEY, []);
+    const localFolders = loadData(FOLDERS_KEY, []);
+    for (const note of localNotes) await saveNoteToFirestore(note);
+    if (localFolders.length > 0) await saveFoldersToFirestore(localFolders);
+    saveData(MIGRATED_KEY, true);
+    setShowMigration(false);
+  };
+
+  // ── Auth actions
+  const handleLogin = async () => {
+    setLoginLoading(true);
+    try { await signInWithPopup(auth, provider); } catch (e) { console.error(e); }
+    setLoginLoading(false);
+  };
+  const handleSignOut = async () => { await signOut(auth); setNotesRaw([]); };
 
   const toggleTheme = () => { const n = dark ? "light" : "dark"; setTheme(n); saveData(THEME_KEY, n); };
   const openNew = () => { setEditTitle(""); setEditBody(""); setEditFolder(folders[0] || ""); setEditColor(null); setActiveNote(null); setModal("note"); };
   const openEdit = (note) => { setEditTitle(note.title); setEditBody(note.body || ""); setEditFolder(note.folder); setEditColor(note.color || null); setActiveNote(note); setModal("note"); };
 
-  const saveNote = () => {
+  const saveNote = async () => {
     if (!editTitle.trim()) return;
     if (!activeNote) {
-      setNotes(prev => [{ id: generateId(), title: editTitle.trim(), body: editBody, folder: editFolder, color: editColor, pinned: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, ...prev]);
+      const note = { id: generateId(), title: editTitle.trim(), body: editBody, folder: editFolder, color: editColor, pinned: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      await saveNoteToFirestore(note);
     } else {
-      setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, title: editTitle.trim(), body: editBody, folder: editFolder, color: editColor, updatedAt: new Date().toISOString() } : n));
+      const updated = { ...activeNote, title: editTitle.trim(), body: editBody, folder: editFolder, color: editColor, updatedAt: new Date().toISOString() };
+      await saveNoteToFirestore(updated);
     }
     setModal(null);
   };
 
-  const deleteNote = (id) => { setNotes(prev => prev.filter(n => n.id !== id)); setDeleteConfirm(null); setModal(null); };
-  const togglePin = (id, e) => { e.stopPropagation(); setNotes(prev => prev.map(n => n.id === id ? { ...n, pinned: !n.pinned } : n)); };
-  const moveNote = (noteId, newFolder) => { setNotes(prev => prev.map(n => n.id === noteId ? { ...n, folder: newFolder, updatedAt: new Date().toISOString() } : n)); setMovingNoteId(null); };
+  const deleteNote = async (id) => { await deleteNoteFromFirestore(id); setDeleteConfirm(null); setModal(null); };
+  const togglePin = async (id, e) => {
+    e.stopPropagation();
+    const note = notes.find(n => n.id === id);
+    if (note) await saveNoteToFirestore({ ...note, pinned: !note.pinned });
+  };
+  const moveNote = async (noteId, newFolder) => {
+    const note = notes.find(n => n.id === noteId);
+    if (note) await saveNoteToFirestore({ ...note, folder: newFolder, updatedAt: new Date().toISOString() });
+    setMovingNoteId(null);
+  };
   const handleCopy = (note, e) => {
     e.stopPropagation();
     navigator.clipboard?.writeText(note.body || note.title).catch(() => {});
@@ -79,24 +218,32 @@ export default function BlazeNotes() {
     setTimeout(() => setCopyFeedback(null), 1500);
   };
 
-  const addFolder = () => {
+  const addFolder = async () => {
     const t = folderInput.trim();
     if (!t || folders.includes(t)) return;
-    setFolders(prev => [...prev, t]);
+    const next = [...folders, t];
+    await saveFoldersToFirestore(next);
+    setFoldersRaw(next);
     setFolderInput(""); setFolderModal(null);
   };
-  const renameFolder = () => {
+  const renameFolder = async () => {
     const t = folderInput.trim();
     if (!t || folders.includes(t)) return;
-    setFolders(prev => prev.map(f => f === folderTarget ? t : f));
-    setNotes(prev => prev.map(n => n.folder === folderTarget ? { ...n, folder: t } : n));
+    const next = folders.map(f => f === folderTarget ? t : f);
+    await saveFoldersToFirestore(next);
+    setFoldersRaw(next);
+    const affected = notes.filter(n => n.folder === folderTarget);
+    for (const note of affected) await saveNoteToFirestore({ ...note, folder: t });
     if (filter === folderTarget) setFilter(t);
     setFolderInput(""); setFolderModal(null);
   };
-  const deleteFolder = () => {
+  const deleteFolder = async () => {
     const fallback = folders.find(f => f !== folderTarget) || "";
-    setFolders(prev => prev.filter(f => f !== folderTarget));
-    setNotes(prev => prev.map(n => n.folder === folderTarget ? { ...n, folder: fallback } : n));
+    const next = folders.filter(f => f !== folderTarget);
+    await saveFoldersToFirestore(next);
+    setFoldersRaw(next);
+    const affected = notes.filter(n => n.folder === folderTarget);
+    for (const note of affected) await saveNoteToFirestore({ ...note, folder: fallback });
     if (filter === folderTarget) setFilter("All");
     setFolderModal(null);
   };
@@ -133,6 +280,14 @@ export default function BlazeNotes() {
 
   const overlay = "rgba(0,0,0,0.65)";
 
+  if (authLoading) return (
+    <div style={{ minHeight: "100vh", background: "#0d0d12", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <span style={{ color: "#6666aa", fontFamily: "monospace", fontSize: 13 }}>Loading...</span>
+    </div>
+  );
+
+  if (!user) return <LoginScreen onLogin={handleLogin} loading={loginLoading} />;
+
   return (
     <div style={{ minHeight: "100vh", background: bg, fontFamily: "'DM Mono', monospace", transition: "background 0.3s" }}>
       <style>{`
@@ -166,6 +321,11 @@ export default function BlazeNotes() {
                 + NEW NOTE
               </S>
               <button className="ib" onClick={toggleTheme} style={{ width: 40, height: 40, fontSize: 17, color: textSecondary }}>{dark ? "☀️" : "🌙"}</button>
+              {/* User avatar + sign out */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {user.photoURL && <img src={user.photoURL} alt="avatar" style={{ width: 32, height: 32, borderRadius: "50%", border: `2px solid ${accent}44` }} />}
+                <S onClick={handleSignOut} style={{ background: "transparent", border: `1px solid ${inputBorder}`, borderRadius: 8, color: textSecondary, fontSize: 11, padding: "6px 12px" }}>Sign out</S>
+              </div>
             </div>
           </div>
           <div style={{ height: 3, background: dark ? "#1e1e2a" : "#e2e8f0", borderRadius: 4, overflow: "hidden" }}>
@@ -175,6 +335,9 @@ export default function BlazeNotes() {
       </div>
 
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "28px 20px" }}>
+
+        {/* MIGRATION BANNER */}
+        {showMigration && <MigrationBanner onMigrate={handleMigrate} onDismiss={() => { saveData(MIGRATED_KEY, true); setShowMigration(false); }} />}
 
         {/* SEARCH */}
         <div style={{ position: "relative", marginBottom: 18 }}>
@@ -387,16 +550,8 @@ function NoteModal({ activeNote, editTitle, setEditTitle, editBody, setEditBody,
     textareaRef.current.scrollTop = (lines - 3) * lineHeight;
   };
 
-  const nextMatch = () => {
-    const next = (matchIdx + 1) % matches.length;
-    setMatchIdx(next);
-    jumpToMatch(next);
-  };
-  const prevMatch = () => {
-    const prev = (matchIdx - 1 + matches.length) % matches.length;
-    setMatchIdx(prev);
-    jumpToMatch(prev);
-  };
+  const nextMatch = () => { const next = (matchIdx + 1) % matches.length; setMatchIdx(next); jumpToMatch(next); };
+  const prevMatch = () => { const prev = (matchIdx - 1 + matches.length) % matches.length; setMatchIdx(prev); jumpToMatch(prev); };
 
   const NOTE_COLORS = [
     { id: "none", value: null },
@@ -415,23 +570,15 @@ function NoteModal({ activeNote, editTitle, setEditTitle, editBody, setEditBody,
     <div style={{ position:"fixed", inset:0, background:overlay, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:20, animation:"fadeIn 0.2s" }}
       onClick={e => e.target===e.currentTarget && onClose()}>
       <div style={{ background:modalBg, border:`1px solid ${cardBorder}`, borderRadius:18, padding:32, width:"100%", maxWidth:780, maxHeight:"92vh", overflowY:"auto", animation:"scaleIn 0.2s", position:"relative" }}>
-
-        {/* Header */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24 }}>
           <h2 style={{ fontFamily:"'Syne',sans-serif", fontSize:20, fontWeight:800, color:textPrimary }}>{activeNote ? "EDIT NOTE" : "NEW NOTE"}</h2>
           <button className="ib" onClick={onClose} style={{ color:textSecondary, fontSize:16, width:32, height:32 }}>✕</button>
         </div>
-
-        {/* Always visible search bar */}
         <div style={{ background: dark?"#1a1a28":"#f0f0ff", border:`1px solid ${accent}33`, borderRadius:10, padding:"10px 14px", marginBottom:18, display:"flex", alignItems:"center", gap:10 }}>
           <span style={{ color:textSecondary, fontSize:13 }}>⌕</span>
-          <input
-            style={{ flex:1, background:"transparent", border:"none", outline:"none", color:textPrimary, fontSize:13, fontFamily:"inherit" }}
-            placeholder="Search inside this note..."
-            value={findText}
-            onChange={e => setFindText(e.target.value)}
-            onKeyDown={e => { if(e.key==="Enter") nextMatch(); }}
-          />
+          <input style={{ flex:1, background:"transparent", border:"none", outline:"none", color:textPrimary, fontSize:13, fontFamily:"inherit" }}
+            placeholder="Search inside this note..." value={findText} onChange={e => setFindText(e.target.value)}
+            onKeyDown={e => { if(e.key==="Enter") nextMatch(); }} />
           <span style={{ color:textSecondary, fontSize:11, whiteSpace:"nowrap" }}>
             {matches.length > 0 ? `${matchIdx+1}/${matches.length}` : findText ? "0 results" : ""}
           </span>
@@ -441,8 +588,6 @@ function NoteModal({ activeNote, editTitle, setEditTitle, editBody, setEditBody,
           </>}
           {findText && <button onClick={() => setFindText("")} style={{ background:"none", border:"none", color:textSecondary, cursor:"pointer", fontSize:14 }}>✕</button>}
         </div>
-
-        {/* Two column layout */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
           <div>
             <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:6 }}>Title *</label>
@@ -458,8 +603,6 @@ function NoteModal({ activeNote, editTitle, setEditTitle, editBody, setEditBody,
             </select>
           </div>
         </div>
-
-        {/* Color */}
         <div style={{ marginBottom:16 }}>
           <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", display:"block", marginBottom:8 }}>Color Label</label>
           <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
@@ -471,8 +614,6 @@ function NoteModal({ activeNote, editTitle, setEditTitle, editBody, setEditBody,
             ))}
           </div>
         </div>
-
-        {/* Content */}
         <div style={{ marginBottom:24 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
             <label style={{ color:textSecondary, fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase" }}>Content</label>
@@ -483,8 +624,6 @@ function NoteModal({ activeNote, editTitle, setEditTitle, editBody, setEditBody,
             placeholder="Write anything... (Press Ctrl+F to search inside)" value={editBody} onChange={e => setEditBody(e.target.value)}
             onFocus={e => e.target.style.borderColor=accent} onBlur={e => e.target.style.borderColor=inputBorder} />
         </div>
-
-        {/* Actions */}
         <div style={{ display:"flex", justifyContent:"space-between" }}>
           {activeNote && <S onClick={onDelete} style={{ background:"#f8717122", border:"1px solid #f8717144", borderRadius:10, color:"#f87171", fontSize:12, padding:"10px 16px" }}>DELETE</S>}
           <div style={{ display:"flex", gap:10, marginLeft:"auto" }}>
